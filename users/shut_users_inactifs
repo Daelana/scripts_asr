@@ -1,0 +1,70 @@
+#!/bin/bash
+#-------------------------------------------------------------------------------
+#Titre: Désactive les comptes utilisateurs inactifs depuis plus de 60 jours
+#Version : 1.0
+#Auteur : Alexia ROUSSET
+#Date de création : 02/04/2026
+#-------------------------------------------------------------------------------
+ 
+#Données nécéssaires
+$Seuil = 60
+$ControleurDomaine = "nomdeserveursupprimépoursécurité.aveo.local"
+$OUComptesInactifs = "OU=Utilisateurs_Inactifs,OU=_Comptes à supprimer,DC=aveo,DC=local"
+$date = Get-Date -UFormat "%Y-%m-%d"
+$pathexport = "D:\Scripts\ActiveDirectory\UtilisateursInactifs\Log\" + $date + "_DisabledInactiveUserAccount.csv"
+$today = Get-Date
+$tab = @()
+
+# Récupère tous les utilisateurs (internes et externes)
+$usersAD = Get-ADUser -Filter * -SearchBase "OU=Utilisateurs,DC=aveo,DC=local" -Server $ControleurDomaine
+$usersAD += Get-ADUser -Filter * -SearchBase "OU=Utilisateurs Externes,DC=aveo,DC=local" -Server $ControleurDomaine
+
+
+foreach ($user in $usersAD) {
+    $userAD = Get-ADUser $user.SamAccountName -Properties Enabled,WhenCreated,LastLogon -Server $ControleurDomaine
+    $DateCreation = $userAD.WhenCreated
+    $DiffCreation = $today - $DateCreation
+
+    if ($DiffCreation.Days -gt $Seuil -and $userAD.Enabled) {
+        # Calcul du dernier logon
+        $lastlogon = if ($userAD.LastLogon) { [DateTime]::FromFileTime($userAD.LastLogon) } else { $DateCreation }
+        $difflastlogon = $today - $lastlogon
+ 
+        if ($difflastlogon.Days -gt $Seuil) {
+            $tab += [PSCustomObject]@{
+                Nom         = $userAD.Surname
+                Prenom      = $userAD.GivenName
+                Login       = $userAD.SamAccountName
+                Mail        = $userAD.Mail
+                DateCreation= $DateCreation
+                LastLogon   = $lastlogon
+                nbjours     = $difflastlogon.Days
+            }
+
+            # Désactivation et déplacement
+            Disable-ADAccount -Identity $userAD.SamAccountName -Server $ControleurDomaine
+            Get-ADUser $userAD.SamAccountName -Server $ControleurDomaine | Move-ADObject -TargetPath $OUComptesInactifs
+        }
+    }
+}
+
+# Export CSV
+$tab | Export-Csv $pathexport -Encoding Unicode -Delimiter ";" -NoTypeInformation
+
+# Suppression des logs d'un an
+$RetentionLog = 365 # jours
+$LogFolder = "D:\Scripts\ActiveDirectory\UtilisateursInactifs\Log"
+$Today = Get-Date
+$Logs = Get-ChildItem $LogFolder
+
+foreach ($Log in $Logs) {
+    $Date = $Log.Name.Substring(0, $Log.Name.IndexOf("_"))
+    $DateLog = Get-Date $Date -ErrorAction SilentlyContinue
+    if ($DateLog) {
+        $Diff = $Today - $DateLog
+        if ($Diff.Days -gt $RetentionLog) {
+            Write-Host "Suppression du fichier : $($Log.FullName)"
+            Remove-Item -Path $Log.FullName
+        }
+    }
+}
