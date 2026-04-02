@@ -1,0 +1,36 @@
+#!/bin/bash
+#------------------------------------------------------
+# Titre: Purge journalière fichier de logs
+# Version : 1.0
+# Auteur : Alexia ROUSSET
+# Date : 03/12/2025
+#------------------------------------------------------
+
+# Pour éviter les erreurs silenceuses
+# -euo= le script s'arrête si une commande échoue ou si une variable n'est pas definie
+set -euo pipefail
+
+
+# Infos nécessaires
+LOG_DIR="/opt/ibm/cognos/analytics/at1/logs/XQE"
+DATE=$(date +"%Y%m%d-%H%M%S")
+LOGFILE="/var/log/logs_script_purge/logs_script_purge.log"
+
+# Suppression des sauvegardes >30 jours
+echo "[ $DATE ] Suppression des logs de plus de 30 jours" | tee -a "$LOGFILE"
+
+# if;then permet de vérifier que le répertoire existe
+# count..wc -l=compte le nombre de fichiers supprimés (1 ligne=1 fichier)
+# find-delete = trouve et supprime
+# echo=pour afficher visuellement
+# tee -a=permet d'afficher sur le terminal et dans les logs le resultat
+if [ -d "$LOG_DIR" ]; then
+    COUNT=$(find "$LOG_DIR" -type f -mtime +30 | wc -l)
+    find "$LOG_DIR" -type f -mtime +30 -delete
+    echo "[ $(date '+%Y%m%d-%H%M%S') ] $COUNT fichiers supprimés dans $LOG_DIR" | tee -a "$LOGFILE"
+else
+    echo "[ $(date '+%Y%m%d-%H%M%S') ] Répertoire $LOG_DIR introuvable" | tee -a "$LOGFILE"
+fi
+
+# Fin de traitement
+echo "[ $(date '+%Y%m%d-%H%M%S') ] Traitement terminé." | tee -a "$LOGFILE"
