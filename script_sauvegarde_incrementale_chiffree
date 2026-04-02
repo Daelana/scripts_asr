@@ -1,0 +1,94 @@
+#!/bin/bash
+#------------------------------------------------------
+# Titre: Sauvegarde incrémentale chiffrée avec rotation
+# Version : 1.0
+# Auteur : Alexia ROUSSET
+# Date : 20/11/2025
+#------------------------------------------------------
+#rappel : 
+#-a pour écrire à la suite dans un fichier
+#-z=test si la valeur du $LAST_SNAPSHOT n'est pas vide
+#$? pour vérifier le code retour de la dernière commande exécutée (=0=succès , sinon erreur)
+
+#Partie snapshot
+#Chemin du dossier à sauvegarder
+SRC="/data"
+
+#Chemin du dossier de backup
+USER="userbackups"
+HOST="mettre l'adresse IP" 
+BACKUP_PATH="/backups"
+DATE=$(date +"%Y%m%d-%H%M%S")
+
+#Chemin vers les logs
+LOGFILE="/var/log/backup.log"
+
+#Dossier de sauvegarde du jour
+SNAPSHOT="$BACKUP_PATH/$DATE"
+
+#Pour trouver le dernier snap existant
+LAST_SNAPSHOT=$(ssh "$USER@$HOST" "ls -1 '$BACKUP_PATH' 2>/dev/null | sort | tail -n 1")
+
+#Pour créer le nouveau snap incrémental
+echo "[ $(date '+%Y%m%d-%H%M%S') ] Démarrage de la sauvegarde vers $HOST" | tee -a "$LOGFILE"
+
+if [ -z "$LAST_SNAPSHOT" ]; then
+    echo "Première sauvegarde complète"
+    rsync -a --delete "$SRC/" "$USER@$HOST:$SNAPSHOT/" | tee -a "$LOGFILE"
+else
+    echo "Sauvegarde incrémentale basée sur $LAST_SNAPSHOT"
+    rsync -a --delete --link-dest="$BACKUP_PATH/$LAST_SNAPSHOT" "$SRC/" "$USER@$HOST:$SNAPSHOT/" | tee -a "$LOGFILE"
+fi
+
+#Pour vérifier si le nouveau snap incrémental a bien fonctionné
+if [ $? -eq 0 ]; then
+    echo "[ $(date '+%Y%m%d-H%M%S') ] Sauvegarde terminée avec succès" | tee -a "$LOGFILE"
+else
+    echo "[ $(date '+%Y%m%d-H%M%S') ] Erreur lors de la sauvegarde" | tee -a "$LOGFILE"
+fi
+
+echo "--------------------------------------------" | tee -a "$LOGFILE"
+
+#Partie chiffrement
+#Pour créer une archive .tar.gz du snap
+echo "[ $(date '+%Y%m%d-%H%M%S') ] Chiffrement GPG du snapshot $SNAPSHOT"
+
+#Pour chiffrer l'archive avec GPG (mdp stocké sécu) et supp la version non chiffrer
+#--batch --yes va empêcher GPG de poser des questions ("Y;N")
+#--cipher-algo AES256 pour chiffrer 
+#--passphrase-file $GPG_PASS_FILE indique le fichier contenant le mdp
+#sha256sum va créer un fichier .sha256 pour vérifier plus tard l'intégrité de la sauvegarde
+GPG_PASS_FILE="/root/.gpg_pass"
+ssh "$USER@$HOST" "
+    set -e
+    cd '$BACKUP_PATH' &&
+    tar -czf - '$DATE' | \
+    gpg --batch --yes --symmetric --cipher-algo AES256 --passphrase-file $GPG_PASS_FILE \
+    > '$DATE.tar.gz.gpg' &&
+    sha256sum '$DATE.tar.gz.gpg' > '$DATE.sha256' &&
+    rm -rf '$DATE'
+    "
+
+if [ $? -eq 0 ]; then
+    echo "[ $(date '+%Y%m%d-%H%M%S') ] Chiffrement terminé et snapshot supprimé" | tee -a "$LOGFILE"
+else
+    echo "[ $(date '+%Y%m%d-%H%M%S') ] Erreur lors du chiffrement GPG" | tee -a "$LOGFILE"
+fi
+
+echo "--------------------------------------------" | tee -a "$LOGFILE"
+
+
+#Partie suppression des sauvegardes >30 jours
+#maxdepth 1 pour éviter de supprimer par erreur des sous-dossiers dans les snap
+echo "[ $(date '+%Y%m%d-%H%M%S') ] Suppression des sauvegardes de plus de 30 jours sur $HOST" | tee -a "$LOGFILE"
+
+ssh "$USER@$HOST" "
+
+ find '$BACKUP_PATH' -maxdepth 1 -name '*.tar.gz.gpg' -mtime +30 -exec rm -f {} +
+"
+if [ $? -eq 0 ]; then
+    echo "[ $(date '+%Y%m%d-%H%M%S') ] Rotation terminée" | tee -a "$LOGFILE"
+else
+    echo "[ $(date '+%Y%m%d-%H%M%S') ] Erreur lors de la rotation" | tee -a "$LOGFILE"
+fi
+echo "Traitement terminé." | tee -a "$LOGFILE"
