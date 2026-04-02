@@ -1,0 +1,134 @@
+#---------------------------------------------------
+#Titre: Ajouts d'utilisateur dans l'AD
+#Version : 1.0
+#Auteur : Alexia ROUSSET
+#Date de création : 02/05/2025
+#---------------------------------------------------
+
+Import-Module ActiveDirectory 
+#Nous chargeons le module Active Directory
+
+
+##### Fonction #####
+function get-clean-all
+{
+    remove-variable * -erroraction silentlycontinue
+    clear
+}
+
+function Create-User{
+
+    param (
+            [string]$Nom,
+            [string]$Prenom,
+            [string]$Service,
+            [string]$Fonction,
+            [string]$login
+            )
+    #Convertir le mdp en chaine de caractère Secure
+    $Securepassword = ConvertTo-SecureString "$env:DEFAULT_PASSWORD" -AsPlainText -Force
+
+    $Prenom = $Prenom.Substring(0,1).ToUpper()+$Prenom.Substring(1).ToLower()
+    $Nom = $Nom.ToUpper()
+    $NomComplet = $Prenom + " " + $Nom
+    $Service = $Service.ToUpper()
+    $OU = "OU=$Service,OU=LYON,DC=axeplane,DC=loc"
+    $UPN = $($login+"@axeplane.loc")
+    $mail = $($login+"@axeplane.loc")
+
+    #Test de Si le compte existe déja dans l'AD
+    if(Get-ADUser -Filter "SamAccountName -eq '$login'" -ErrorAction SilentlyContinue)
+    {
+        Write-Host "`nL'utilisateur existe déjà dans l'AD" -ForegroundColor Red
+    }
+    else{
+        Write-Host "`nL'utilisateur n'existe pas dans l'AD" -ForegroundColor Green
+        New-ADUser      -Path $OU `
+                        -Name $NomComplet `
+                        -DisplayName $NomComplet `
+                        -SamAccountName $login `
+                        -GivenName $Prenom `
+                        -Surname $Nom `
+                        -UserPrincipalName $UPN `
+                        -Title $Fonction `
+                        -EmailAddress $mail `
+                        -AccountPassword $Securepassword `
+                        -ChangePasswordAtLogon $true `
+                        -Enabled $true `
+                        -PasswordNeverExpires $false
+    }
+
+    #Récap des informations de l'utilisateur
+    Write-Host "Informations de l'utilisateur :"
+    Write-Host "Nom : $Nom"
+    Write-Host "Prénom : $Prenom"
+    Write-Host "Service : $Service"
+    Write-Host "Fonction : $Fonction"
+    Write-Host "Login : $login"
+
+    #Ajout dans le groupe GG_ du service
+    Add-ADGroupMember -Identity $("GG_"+$Service) -Members $login
+
+    ### CREATION DU REPERTOIRE PERSONNEL ###
+
+    $share = "E:\Partages personnels utilisateurs"
+    $Userfolder = Join-Path $share $login
+
+    #Test de si le répertoire existe déja
+    if(-not (Test-Path -Path $Userfolder)) {
+        New-Item -ItemType Directory -Path $Userfolder | Out-Null
+        Write-Host "Dossier créé : $Userfolder"
+    }
+    else {
+        Write-Host "Le dossier existe déja : $Userfolder"
+    }
+
+    #Suppression de l'héritage des droits et des droits hérités
+    $acl = Get-Acl -Path $Userfolder
+    $acl.SetAccessRuleProtection($true,$false)
+    Set-Acl -Path $Userfolder -AclObject $acl
+
+    #Ajout des droits souhaités
+    $Acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("SYSTEM", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
+    $Acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("$login", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
+    $Acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("Administrateur", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")))
+
+    #Application des droits sur le répertoire
+    Set-Acl -Path $UserFolder -AclObject $Acl
+    Write-Host "Droits correctement appliqués sur $UserFolder"
+
+    #Partage du répertoire
+    New-SmbShare -Name "$login" -Path "$Userfolder" -FullAccess "Tout le monde","Administrateurs" | Out-Null
+
+    #Mappage du répertoire sur le compte AD
+    $HomeSRV = "\\SRV-AD"
+    $HomeDirectory = Join-Path $HomeSRV $login
+
+    Set-ADUser -Identity $login -HomeDirectory $HomeDirectory -HomeDrive "P:"
+    Write-Host "Dossier de base défini pour $login : P: --> $HomeDirectory"
+}
+
+
+##### Début du SCRIPT #####
+get-clean-all
+
+$date = Get-Date -Format "yyyy_MM_dd_HHmm"
+$outputFile = "E:\Partages communs\Informatique\Scripts\Ajouts d'utilisateur dans l'AD\Logs\AddUsersAD_$date.txt"
+Start-Transcript -Path $outputFile
+
+$currentUser = $env:UserName
+Write-Host "L'utilisateur qui éxécute le script est $currentUser`n"
+
+Write-Host "--------------------------------------------------------------------------------" -ForegroundColor Green
+Write-Host "--                               Active Directory                             --" -ForegroundColor Green
+Write-Host "------------------------------- Ajout Utilisateurs -----------------------------" -ForegroundColor Green
+Write-Host "--------------------------------------------------------------------------------" -ForegroundColor Green
+Write-Host " "
+
+# Lecture du CSV et création des utilisateurs
+$tabUser = Import-CSV "E:\Partages communs\Informatique\Scripts\Ajouts d'utilisateur dans l'AD\Utilisateurs AD.csv"
+foreach ($User in $tabUser) {
+    Create-User -Prenom $User.prenom -Nom $User.nom -Service $User.service -Fonction $User.fonction -login $User.login
+}
+
+Stop-Transcript
