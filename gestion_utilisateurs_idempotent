@@ -1,0 +1,129 @@
+#!/bin/bash
+#---------------------------------------------------
+# Titre: Gestion des utilisateurs Idempotent
+# Version : 2.0
+# Auteur : Alexia ROUSSET
+# Date : 19/03/2026
+#---------------------------------------------------
+
+#rappel : 
+#-a pour écrire à la suite dans un fichier
+#cut → découpe une ligne de texte avec un séparateur
+#-d: pour dire que la séparation c'est des :
+#-fx → (le x doit être un chiffre) pour dire qu'on veut une colonne en particulier
+#fi = met fin à "if"
+
+LOGFILE="/var/log/script_users.log"
+
+# Vérifie que le script est lancé en root
+#id -u renvoie le nom de l'utilisateur actuel, si l'utilisateur=/=root ça ne fonctionnera pas
+if [ "$(id -un)" != "root" ]; then
+    echo "Ce script doit être exécuté en root" | tee -a "$LOGFILE"
+    exit 1
+fi
+
+#$1 = le premier argument donné = le fichier utilisateur csv
+CSV_FILE="$1"
+
+#-z=test si la valeur $CSV_FILE n'est pas vide
+#$0=le script actuel (Script_utilisateurs_idempotent)
+if [[ -z "$CSV_FILE" ]]; then
+    echo "Usage : $0 fichier_utilisateurs.csv" | tee -a "$LOGFILE"
+    exit 1
+fi
+
+if [[ ! -f "$CSV_FILE" ]]; then
+    echo "Fichier $CSV_FILE introuvable !" | tee -a "$LOGFILE"
+    exit 1
+fi
+
+#La date se met automatique à la date du jour
+DATE=$(date +%Y%m%d)
+
+#Le caractère +2 ignore la première ligne du csv, pipe pour envoyer la sortie de la 1er commande vers la suivante, while pour créer une boucle qui va lire chaque ligne du csv, ',' pour dire que c'est séparé par une virgule.
+tail -n +2 "$CSV_FILE" | while IFS=',' read -r username uid gid full_name shell action; do
+username=$(echo "$username" | tr -d '\r' | xargs)
+action=$(echo "$action" | tr -d '\r' | xargs)
+
+#-a pour continuer d'écrire dans le fichier de log
+    echo "---------------------------------------------------" | tee -a "$LOGFILE"
+#Pour afficher dans le fichier de log l'username et l'action demandé
+#    echo "Traitement de l'utilisateur : $username, action : $action" | tee -a "$LOGFILE"
+	echo "$username, $action"
+       	
+#Case action sert à executer les différentes actions 
+    
+case "$action" in
+create)
+
+#On vérifie si l'user existe ou non, "si..alors..")
+            if id "$username" &>/dev/null; then
+                echo "Utilisateur $username existe déjà. Ignoré." | tee -a "$LOGFILE"
+            else
+                echo "Création de l'utilisateur $username..." | tee -a "$LOGFILE"
+                useradd -m -u "$uid" -g "$gid" -c "$full_name" -s "$shell" "$username"
+                mkdir -p "/home/$username/.ssh"
+                chown -R "$username:$username" "/home/$username/.ssh"
+		echo "Utilisateur $username créé avec succès." | tee -a "$LOGFILE"
+	    fi
+		;;
+
+#Pareil que create, mais pour modify
+modify)
+
+#Vérifie que l'user existe (+ si.. alors..)
+            if id "$username" &>/dev/null; then
+#Si l'user n'existe pas ce bloque est sauté
+                echo "Modification de l'utilisateur $username..." | tee -a "$LOGFILE"
+#Compare le shell actuel avec le shell de la colonne du csv
+                CURRENT_SHELL=$(getent passwd "$username" | cut -d: -f7)
+            if [ "$CURRENT_SHELL" != "$shell" ]; then
+#Change la colonne shell par rapport au csv si c'est différent, sinon c'est ignoré
+                    usermod -s "$shell" "$username"
+                    echo "Shell mis à jour pour $username." | tee -a "$LOGFILE"
+            fi
+#Compare le username avec ce qui est déjà présent sur linux (cat /etc/passwd)
+                CURRENT_FULLNAME=$(getent passwd "$username" | cut -d: -f5)
+            if [ "$CURRENT_FULLNAME" != "$full_name" ]; then
+                    usermod -c "$full_name" "$username"
+                    echo "Nom complet mis à jour pour $username." | tee -a "$LOGFILE"
+            fi
+
+#Recupère l'uid et le gid de l'user
+                CURRENT_UID=$(id -u "$username")
+                CURRENT_GID=$(id -g "$username")
+#Si uid et gid actuels =/= du csv (-ne, not equal) le modifie et le note dans le fichier de log
+            if [ "$CURRENT_UID" -ne "$uid" ]; then
+                    usermod -u "$uid" "$username"
+                    echo "UID mis à jour pour $username." | tee -a "$LOGFILE"
+            fi
+            if [ "$CURRENT_GID" -ne "$gid" ]; then
+                    usermod -g "$gid" "$username"
+                    echo "GID mis à jour pour $username." | tee -a "$LOGFILE"
+            fi
+            else
+                echo "Utilisateur $username n'existe pas, impossible de modifier." | tee -a "$LOGFILE"
+            fi
+            ;;
+#Pareil que create, modify mais avec delete
+delete)
+#Vérifie que l'user existe (+ si..alors..)
+            if id "$username" &>/dev/null; then
+                echo "Suppression de l'utilisateur $username..." | tee -a "$LOGFILE"
+                BACKUP_FILE="/etc/backup/users/${username}-${DATE}.tar.gz"
+                mkdir -p "/etc/backup/users"
+                tar -czf "$BACKUP_FILE" "/home/$username"
+                echo "Backup de /home/$username dans $BACKUP_FILE" | tee -a "$LOGFILE"
+                userdel -r "$username"
+                echo "Utilisateur $username supprimé." | tee -a "$LOGFILE"
+            else
+                echo "Utilisateur $username n'existe pas, rien à supprimer." | tee -a "$LOGFILE"
+            fi
+            ;;
+
+        *)
+            echo "Action inconnue : $action" | tee -a "$LOGFILE"
+            ;;
+	esac
+done 
+echo "Traitement terminé." | tee -a "$LOGFILE"
