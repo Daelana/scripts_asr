@@ -1,0 +1,57 @@
+#!/bin/bash
+#------------------------------------------------------
+# Titre : Gestion des disques
+# Version : 1.0
+# Auteur : Alexia ROUSSET
+# Date : 02/01/2026
+#------------------------------------------------------
+#Configuration
+#Seuil d'alerte en pourcentage
+DISK_USED=70         
+INODES_USED=85       
+#true = simulation, false = exécution réelle
+DRY_RUN=false         
+MAIL_TO="alexia.mabille@gmail.com"
+LOG_FILE="/var/disk_used_$(date +%Y%m%d).log"
+mkdir -p "$(dirname "$LOG_FILE")"
+#Pour définir les répertoires les plus volumineux (nécessaire plus bas)
+#du -x du plus grand au plus petit
+find_heavy_dirs() {
+    log "Répertoires volumineux dans $1 :"
+    du -x --max-depth=2 "$1" 2>/dev/null | sort -nr | head -10 | tee -a "$LOG_FILE"
+}
+#------------------------------------------------------
+#Pour écrire dans les logs et sur le terminal
+#log()=pour afficher le message à l'écran et l'enregistré dans les logs 
+log() {
+    echo "$(date '+%Y-%m-%d') - $*" | tee -a "$LOG_FILE"
+}
+#Pour envoyer le mail d'alerte
+send_mail() {
+    command -v mail >/dev/null 2>&1 && echo "$2" | mail -s "$1" "$MAIL_TO" \
+    || log "Mail non envoyé : commande 'mail' introuvable"
+}
+#------------------------------------------------------
+#Surveillance des disk
+check_all_filesystems() {
+    log "Analyse de la capacité disque..."
+    df -hP | awk 'NR>1 {print $1, $5, $6}' | while read -r fs use mount; do
+        usage=${use%\%}
+        if (( usage >= DISK_USED )); then
+            log "Seuil dépassé sur $mount : $usage%"
+            find_heavy_dirs "$mount"
+        fi
+    done
+    df -iP | awk 'NR>1 {print $1, $5, $6}' | while read -r fs use mount; do
+        inodes=${use%\%}
+        if (( inodes >= INODES_USED )); then
+            log "Seuil d'inodes dépassé sur $mount : $inodes%"
+        fi
+    done
+}
+#------------------------------------------------------
+#Appel du code principal
+log "Début de la surveillance disque"
+check_all_filesystems
+log "Fin de la surveillance disque"
+send_mail "Rapport de surveillance disque" "$(tail -n 50 "$LOG_FILE")"
