@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+#------------------------------------------------------
+# Titre: Face recognition et prise de photos
+# Version : 1.0
+# Auteur : Alexia ROUSSET
+# Date : 24/04/2026
+#------------------------------------------------------
+
 # à faire qu'une fois pour enregistrer son visage, lancer la reconnaissance et importer les modules
 """
 FaceLock — pip install opencv-python face_recognition numpy
